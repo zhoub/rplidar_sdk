@@ -24,8 +24,14 @@
  *
  */
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
+
+#include <GL/gl.h>
+#include <GL/glu.h>
+#include <GL/freeglut.h>
 
 #include "rplidar.h" //RPLIDAR standard sdk, all-in-one header
 
@@ -81,7 +87,102 @@ void ctrlc(int)
     ctrl_c_pressed = true;
 }
 
-int main(int argc, const char * argv[]) {
+static RPlidarDriver *drv = NULL;
+
+static const size_t NUM_SAMPLES = 8192;
+
+static void idle()
+{
+	glutPostRedisplay();
+}
+
+static void render()
+{
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+	// prepare the GL array.
+	float points[NUM_SAMPLES * 2];
+
+	float x_min = 1e6f, x_max = - 1e6f;
+	float y_min = 1e6f, y_max = - 1e6f;
+
+    // fetch result.
+    rplidar_response_measurement_node_hq_t nodes[NUM_SAMPLES];
+    size_t   count = _countof(nodes);
+
+    u_result op_result = drv->grabScanDataHq(nodes, count, 0);
+
+    if (IS_OK(op_result)) {
+        drv->ascendScanData(nodes, count);
+        for (int pos = 0; pos < (int)count ; ++pos) {
+            float angle = nodes[pos].angle_z_q14 * 90.f / 16384.f;
+            float distance = nodes[pos].dist_mm_q2 / 4.0f * 2.0f;
+
+			// convert tht theta and distance to xy.
+			float rad = angle * M_PI / 180.0;
+			float x = distance * cosf(rad);
+			float y = distance * sinf(rad);
+			
+			int off = pos * 2;
+			points[off] = x;
+			points[off + 1] = y;
+
+			// calculate bounding box.
+			x_min = (x < x_min ? x : x_min);
+			x_max = (x > x_max ? x : x_max);
+
+			y_min = (y < y_min ? y : y_min);
+			y_max = (y > y_max ? y : y_max);
+        }
+
+		// draw the points.
+		glEnableClientState(GL_VERTEX_ARRAY);
+
+		glVertexPointer(2, GL_FLOAT, 0, points);
+
+		glDrawArrays(GL_POINTS, 0, count);
+
+		glDisableClientState(GL_VERTEX_ARRAY);
+    }
+
+	glutSwapBuffers();
+}
+
+static void close()
+{
+    // Stop the motor.
+    drv->stop();
+    drv->stopMotor();
+
+    // Dispose Drive.
+    RPlidarDriver::DisposeDriver(drv);
+    drv = NULL;
+}
+
+int main(int argc, char * argv[]) {
+	// prepare GLUT.
+	glutInit(&argc, argv);
+	glutInitDisplayMode(GLUT_DEPTH | GLUT_DOUBLE | GLUT_RGBA);
+	glutInitWindowSize(512, 512);
+    glutCreateWindow("ultra_simple");
+
+	glutDisplayFunc(render);
+	glutIdleFunc(idle);
+    glutCloseFunc(close);
+
+	glPointSize(1);
+	glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+
+	glMatrixMode(GL_PROJECTION);
+	glLoadIdentity();
+    gluOrtho2D(-2000, 2000, -2000, 2000);
+
+	glMatrixMode(GL_MODELVIEW);
+	glLoadIdentity();
+
+	glViewport(0, 0, 512, 512);
+
+	// prepare serial port.
     const char * opt_com_path = NULL;
     _u32         baudrateArray[2] = {115200, 256000};
     _u32         opt_com_baudrate = 0;
@@ -114,7 +215,7 @@ int main(int argc, const char * argv[]) {
     }
 
     // create the driver instance
-	RPlidarDriver * drv = RPlidarDriver::CreateDriver(DRIVER_TYPE_SERIALPORT);
+	drv = RPlidarDriver::CreateDriver(DRIVER_TYPE_SERIALPORT);
     if (!drv) {
         fprintf(stderr, "insufficent memory, exit\n");
         exit(-2);
@@ -170,7 +271,7 @@ int main(int argc, const char * argv[]) {
         
         fprintf(stderr, "Error, cannot bind to the specified serial port %s.\n"
             , opt_com_path);
-        goto on_finished;
+		exit(1);
     }
 
     // print out the device serial number, firmware and hardware version number..
@@ -190,44 +291,15 @@ int main(int argc, const char * argv[]) {
 
     // check health...
     if (!checkRPLIDARHealth(drv)) {
-        goto on_finished;
+		exit(1);
     }
 
-    signal(SIGINT, ctrlc);
-    
     drv->startMotor();
     // start scan...
     drv->startScan(0,1);
 
-    // fetech result and print it out...
-    while (1) {
-        rplidar_response_measurement_node_t nodes[8192];
-        size_t   count = _countof(nodes);
-
-        op_result = drv->grabScanData(nodes, count);
-
-        if (IS_OK(op_result)) {
-            drv->ascendScanData(nodes, count);
-            for (int pos = 0; pos < (int)count ; ++pos) {
-                printf("%s theta: %03.2f Dist: %08.2f Q: %d \n", 
-                    (nodes[pos].sync_quality & RPLIDAR_RESP_MEASUREMENT_SYNCBIT) ?"S ":"  ", 
-                    (nodes[pos].angle_q6_checkbit >> RPLIDAR_RESP_MEASUREMENT_ANGLE_SHIFT)/64.0f,
-                    nodes[pos].distance_q2/4.0f,
-                    nodes[pos].sync_quality >> RPLIDAR_RESP_MEASUREMENT_QUALITY_SHIFT);
-            }
-        }
-
-        if (ctrl_c_pressed){ 
-            break;
-        }
-    }
-
-    drv->stop();
-    drv->stopMotor();
-    // done!
-on_finished:
-    RPlidarDriver::DisposeDriver(drv);
-    drv = NULL;
+	// enter the GL loop.
+	glutMainLoop();
     return 0;
 }
 
