@@ -96,6 +96,29 @@ static void idle()
 	glutPostRedisplay();
 }
 
+static void keyboard(unsigned char key, int x, int y)
+{
+    switch (key)
+    {
+        case 'c':
+        {
+            drv->stop();
+            drv->stopMotor();
+            break;
+        }
+        case 's':
+        {
+            drv->startMotor();
+            drv->startScan(false, true);
+        }
+    }
+}
+
+static void reshape(int w, int h)
+{
+    glViewport(0, 0, w, h);
+}
+
 static void render()
 {
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -115,13 +138,15 @@ static void render()
     if (IS_OK(op_result)) {
         drv->ascendScanData(nodes, count);
         for (int pos = 0; pos < (int)count ; ++pos) {
-            float angle = nodes[pos].angle_z_q14 * 90.f / 16384.f;
-            float distance = nodes[pos].dist_mm_q2 / 4.0f * 2.0f;
+            float angle = nodes[pos].angle_z_q14 * 90.f / (1 << 14);
+            float distance = nodes[pos].dist_mm_q2 / (1 << 2);
 
 			// convert tht theta and distance to xy.
 			float rad = angle * M_PI / 180.0;
 			float x = distance * cosf(rad);
 			float y = distance * sinf(rad);
+
+            printf("Angle: %03.3f %03.3f XY: %06.3f  %06.3f\n", angle, distance, x, y);
 			
 			int off = pos * 2;
 			points[off] = x;
@@ -140,9 +165,42 @@ static void render()
 
 		glVertexPointer(2, GL_FLOAT, 0, points);
 
+        glColor3f(1, 1, 1);
 		glDrawArrays(GL_POINTS, 0, count);
 
 		glDisableClientState(GL_VERTEX_ARRAY);
+
+        // draw the circles.
+        glBegin(GL_LINE_LOOP);
+        for(int i = 0; i < 300; i ++)
+        {
+            double angle = 2.0 * M_PI * i / 300;
+            double x = cos(angle) * 200;
+            double y = sin(angle) * 200;
+            glColor3f(1, 0, 0);
+            glVertex2d(x, y);
+        }
+        glEnd();
+
+        glBegin(GL_LINE_LOOP);
+        for(int i = 0; i < 300; i ++)
+        {
+            double angle = 2.0 * M_PI * i / 300;
+            double x = cos(angle) * 300;
+            double y = sin(angle) * 300;
+            glColor3f(1, 1, 0);
+            glVertex2d(x, y);
+        }
+        glEnd();
+
+        // draw rectangle as robot body.
+        glBegin(GL_LINE_LOOP);
+        glColor3f(0, 0, 1);
+        glVertex2f(-250, -200);
+        glVertex2f( 250, -200);
+        glVertex2f( 250,  200);
+        glVertex2f(-250,  200);
+        glEnd();
     }
 
 	glutSwapBuffers();
@@ -167,7 +225,9 @@ int main(int argc, char * argv[]) {
     glutCreateWindow("ultra_simple");
 
 	glutDisplayFunc(render);
+    glutReshapeFunc(reshape);
 	glutIdleFunc(idle);
+    glutKeyboardFunc(keyboard);
     glutCloseFunc(close);
 
 	glPointSize(1);
@@ -175,10 +235,12 @@ int main(int argc, char * argv[]) {
 
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
-    gluOrtho2D(-2000, 2000, -2000, 2000);
+    gluOrtho2D(-500, 500, -500, 500);
 
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
+    glRotatef(90, 0, 0, 1);
+    glScalef(-1, 1, 1);
 
 	glViewport(0, 0, 512, 512);
 
@@ -210,7 +272,7 @@ int main(int argc, char * argv[]) {
 #elif __APPLE__
         opt_com_path = "/dev/tty.SLAB_USBtoUART";
 #else
-        opt_com_path = "/dev/ttyUSB0";
+        opt_com_path = "/dev/ttyUSB1";
 #endif
     }
 
@@ -246,7 +308,7 @@ int main(int argc, char * argv[]) {
     else
     {
         size_t baudRateArraySize = (sizeof(baudrateArray))/ (sizeof(baudrateArray[0]));
-        for(size_t i = 0; i < baudRateArraySize; ++i)
+        for(int i = baudRateArraySize - 1; i >= 0; -- i)
         {
             if(!drv)
                 drv = RPlidarDriver::CreateDriver(DRIVER_TYPE_SERIALPORT);
@@ -256,6 +318,7 @@ int main(int argc, char * argv[]) {
 
                 if (IS_OK(op_result)) 
                 {
+                    printf("Using %d baudrate.\n", baudrateArray[i]);
                     connectSuccess = true;
                     break;
                 }
@@ -293,10 +356,6 @@ int main(int argc, char * argv[]) {
     if (!checkRPLIDARHealth(drv)) {
 		exit(1);
     }
-
-    drv->startMotor();
-    // start scan...
-    drv->startScan(0,1);
 
 	// enter the GL loop.
 	glutMainLoop();
